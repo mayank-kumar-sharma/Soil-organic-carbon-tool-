@@ -25,11 +25,16 @@ def fetch_soil_data(lat: float, lon: float):
         data = response.json()
         results = {}
 
-        # Extract topsoil layer (0-5 cm) values
+        # Extract topsoil layer (0-5 cm) values properly
         for prop in params["property"]:
             try:
-                values = data["properties"]["layers"][prop]["depths"][0]["values"]
-                results[prop] = values.get("mean", None)
+                layers = data["properties"]["layers"][prop]["depths"]
+                topsoil = next((d for d in layers if d["range"]["top"] == 0 and d["range"]["bottom"] == 5), None)
+
+                if topsoil and "values" in topsoil:
+                    results[prop] = topsoil["values"].get("mean", None)
+                else:
+                    results[prop] = None
             except Exception:
                 results[prop] = None
 
