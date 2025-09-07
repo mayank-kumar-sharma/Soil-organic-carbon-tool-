@@ -4,6 +4,7 @@ import requests
 import streamlit as st
 import pandas as pd
 from typing import Any, Dict, List, Optional, Tuple
+from geopy.geocoders import Nominatim
 
 SOILGRIDS_API = "https://rest.isric.org/soilgrids/v2.0/properties/query"
 PROPERTIES = ["soc", "phh2o", "sand", "silt", "clay", "bdod", "ocs"]
@@ -132,6 +133,16 @@ def fetch_soil_data_all(lat: float, lon: float) -> Dict[str, Dict[str, Any]]:
         out[p] = {"value": val, "unit": unit}
     return out
 
+def get_location_name(lat: float, lon: float) -> str:
+    try:
+        geolocator = Nominatim(user_agent="soil_app")
+        location = geolocator.reverse((lat, lon), language="en")
+        if location:
+            return location.address
+        return "Unknown Location"
+    except:
+        return "Unknown Location"
+
 # -----------------------------
 # Streamlit UI
 # -----------------------------
@@ -148,13 +159,14 @@ with st.expander("Which properties are requested?"):
 
 col1, col2 = st.columns(2)
 with col1:
-    lat = st.number_input("Latitude", value=12.971600, format="%.6f")
+    lat = st.number_input("Latitude", value=19.0760, format="%.6f")  # Default = Mumbai
 with col2:
-    lon = st.number_input("Longitude", value=77.594600, format="%.6f")
+    lon = st.number_input("Longitude", value=72.8777, format="%.6f")
 
 if st.button("Get Soil Data"):
     with st.spinner("Querying SoilGrids..."):
         out = fetch_soil_data_all(lat, lon)
+        location_name = get_location_name(lat, lon)
 
     rows = []
     for prop in PROPERTIES:
@@ -165,7 +177,7 @@ if st.button("Get Soil Data"):
         rows.append({"Property": prop.upper(), "Value": display_val, "Unit": unit})
 
     df = pd.DataFrame(rows)
-    st.subheader("Results (first available value, scaled or default if missing)")
+    st.subheader(f"Soil Data for {location_name}")
     st.table(df.set_index("Property"))
 
     try:
@@ -174,6 +186,8 @@ if st.button("Get Soil Data"):
     except Exception:
         pass
 
-    st.caption("Some values are defaults or estimated because SoilGrids data is missing in this region.")
-    st.markdown("Made with love by **Mayank Kumar Sharma** ❤️")
+    st.caption("⚠️ Some values are defaults or estimated because SoilGrids data is missing in this region.")
 
+# Permanent footer
+st.markdown("---")
+st.markdown("💡 Made with ❤️ by **Mayank Kumar Sharma**")
