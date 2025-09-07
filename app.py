@@ -6,14 +6,10 @@ import pandas as pd
 from typing import Any, Dict, List, Optional, Tuple
 
 SOILGRIDS_API = "https://rest.isric.org/soilgrids/v2.0/properties/query"
-# Properties we care about
-PROPERTIES = ["soc", "phh2o", "sand", "silt", "clay", "bdod", "ocs"]  # include ocs/ocd if present
-# Preferred depth targets (topsoil first, then fallback)
+PROPERTIES = ["soc", "phh2o", "sand", "silt", "clay", "bdod", "ocs"]
 PREFERRED_DEPTHS = [(0.0, 5.0), (0.0, 30.0), (0.0, 15.0)]
 
-# Utility: parse numeric from label like "0-5cm" or "0–5 cm"
 _depth_label_re = re.compile(r"(\d+\.?\d*)\s*[-–]\s*(\d+\.?\d*)")
-
 
 def _try_parse_depth_from_label(label: str) -> Optional[Tuple[float, float]]:
     if not label or not isinstance(label, str):
@@ -28,7 +24,6 @@ def _try_parse_depth_from_label(label: str) -> Optional[Tuple[float, float]]:
             return None
     return None
 
-
 def _get_top_bottom_from_range(d: Dict[str, Any]) -> Optional[Tuple[float, float]]:
     rng = d.get("range") or {}
     top = rng.get("top") or rng.get("top_depth")
@@ -40,8 +35,7 @@ def _get_top_bottom_from_range(d: Dict[str, Any]) -> Optional[Tuple[float, float
         return None
     return None
 
-
-def _extract_numeric_from_values(values: Dict[str, Any]) -> Optional[float]:
+def _extract_numeric_from_values(values: Dict[str, Any], d_factor: float = 1) -> Optional[float]:
     if not isinstance(values, dict):
         return None
     prefer = ["mean", "Q0.5", "median", "Q0.05", "Q0.95"]
@@ -49,30 +43,24 @@ def _extract_numeric_from_values(values: Dict[str, Any]) -> Optional[float]:
         v = values.get(k)
         if v is not None:
             try:
-                return float(v)
+                return float(v) / d_factor
             except Exception:
                 continue
     for k, v in values.items():
         if v is None:
             continue
         try:
-            return float(v)
+            return float(v) / d_factor
         except Exception:
             continue
     return None
 
-
 def _extract_unit(layer: Dict[str, Any]) -> Optional[str]:
     um = layer.get("unit_measure") or {}
-    unit = um.get("mapped_units") or um.get("target_units") or um.get("unit")
+    unit = um.get("target_units") or um.get("mapped_units") or um.get("unit")
     return unit
 
-
 def fetch_property_for_point(lat: float, lon: float, prop: str) -> Tuple[Optional[float], Optional[str], Optional[Dict[str, Any]]]:
-    """
-    Query SoilGrids for a single property at lat/lon.
-    Returns (value, unit, raw_layer_dict_or_none)
-    """
     params = {"lat": lat, "lon": lon, "property": prop}
     try:
         r = requests.get(SOILGRIDS_API, params=params, timeout=25)
@@ -100,18 +88,18 @@ def fetch_property_for_point(lat: float, lon: float, prop: str) -> Tuple[Optiona
     if not layer_obj:
         return None, None, data
 
-    depths = layer_obj.get("depths", []) or []
+    depths = layer_obj.get("depths") or []
     unit = _extract_unit(layer_obj)
+    d_factor = layer_obj.get("unit_measure", {}).get("d_factor", 1)
 
-    # Iterate all depths, return first non-NULL mean value
+    # Return first non-null numeric value across all depths with proper scaling
     for d in depths:
         vals = d.get("values") or {}
-        numeric = _extract_numeric_from_values(vals)
+        numeric = _extract_numeric_from_values(vals, d_factor=d_factor)
         if numeric is not None:
             return numeric, unit, layer_obj
 
     return None, unit, layer_obj
-
 
 def fetch_soil_data_all(lat: float, lon: float) -> Tuple[Dict[str, Dict[str, Any]], Optional[str]]:
     out: Dict[str, Dict[str, Any]] = {}
@@ -119,7 +107,6 @@ def fetch_soil_data_all(lat: float, lon: float) -> Tuple[Dict[str, Dict[str, Any
         val, unit, raw = fetch_property_for_point(lat, lon, p)
         out[p] = {"value": val, "unit": unit, "raw": raw}
     return out, None
-
 
 # -----------------------------
 # Streamlit UI
@@ -133,7 +120,7 @@ st.markdown(
 
 with st.expander("Which properties are requested?"):
     st.write(", ".join(PROPERTIES))
-    st.caption("We attempt all available depths and return the first non-NULL value.")
+    st.caption("We attempt all available depths and return the first non-NULL value, applying unit scaling if needed.")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -154,10 +141,9 @@ if st.button("Get Soil Data"):
         rows.append({"Property": prop.upper(), "Value": display_val, "Unit": unit})
 
     df = pd.DataFrame(rows)
-    st.subheader("Results (first available value across all depths)")
+    st.subheader("Results (first available value across all depths, scaled)")
     st.table(df.set_index("Property"))
 
-    # Map preview
     try:
         st.subheader("Location preview")
         st.map(pd.DataFrame({"lat": [lat], "lon": [lon]}))
@@ -168,3 +154,4 @@ if st.button("Get Soil Data"):
         for prop in PROPERTIES:
             st.markdown(f"**{prop.upper()}**")
             st.json(out[prop].get("raw"))
+
