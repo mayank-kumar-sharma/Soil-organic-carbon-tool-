@@ -11,6 +11,17 @@ PREFERRED_DEPTHS = [(0.0, 5.0), (0.0, 30.0), (0.0, 15.0)]
 
 _depth_label_re = re.compile(r"(\d+\.?\d*)\s*[-–]\s*(\d+\.?\d*)")
 
+# Default values if SoilGrids returns null (example realistic defaults)
+DEFAULT_VALUES = {
+    "soc": 15.0,      # g/kg
+    "phh2o": 6.5,     # -
+    "sand": 30.0,     # %
+    "silt": 40.0,     # %
+    "clay": 30.0,     # %
+    "bdod": 1.3,      # kg/dm³
+    "ocs": 4.0        # kg/m²
+}
+
 def _try_parse_depth_from_label(label: str) -> Optional[Tuple[float, float]]:
     if not label or not isinstance(label, str):
         return None
@@ -60,20 +71,35 @@ def _extract_unit(layer: Dict[str, Any]) -> Optional[str]:
     unit = um.get("target_units") or um.get("mapped_units") or um.get("unit")
     return unit
 
-def fetch_property_for_point(lat: float, lon: float, prop: str) -> Tuple[Optional[float], Optional[str], Optional[Dict[str, Any]]]:
+def fetch_property_for_point(lat: float, lon: float, prop: str) -> Tuple[Optional[float], Optional[str]]:
+    # Try primary point
+    val, unit = _fetch_value(lat, lon, prop)
+    if val is not None:
+        return val, unit
+    # Option A: try nearby points with small delta
+    delta = [0.01, -0.01, 0.02, -0.02]
+    for dlat in delta:
+        for dlon in delta:
+            val, unit = _fetch_value(lat + dlat, lon + dlon, prop)
+            if val is not None:
+                return val, unit
+    # Option B: fallback to default
+    return DEFAULT_VALUES[prop], ""
+
+def _fetch_value(lat: float, lon: float, prop: str) -> Tuple[Optional[float], Optional[str]]:
     params = {"lat": lat, "lon": lon, "property": prop}
     try:
         r = requests.get(SOILGRIDS_API, params=params, timeout=25)
-    except requests.RequestException as e:
-        return None, None, {"error": str(e)}
+    except requests.RequestException:
+        return None, None
 
     if r.status_code != 200:
-        return None, None, {"error": f"status {r.status_code}", "text": r.text}
+        return None, None
 
     try:
         data = r.json()
-    except Exception as e:
-        return None, None, {"error": f"invalid json: {e}"}
+    except Exception:
+        return None, None
 
     layers = data.get("properties", {}).get("layers")
     layer_obj = None
@@ -86,27 +112,25 @@ def fetch_property_for_point(lat: float, lon: float, prop: str) -> Tuple[Optiona
                 break
 
     if not layer_obj:
-        return None, None, data
+        return None, None
 
     depths = layer_obj.get("depths") or []
     unit = _extract_unit(layer_obj)
     d_factor = layer_obj.get("unit_measure", {}).get("d_factor", 1)
 
-    # Return first non-null numeric value across all depths with proper scaling
     for d in depths:
         vals = d.get("values") or {}
         numeric = _extract_numeric_from_values(vals, d_factor=d_factor)
         if numeric is not None:
-            return numeric, unit, layer_obj
+            return numeric, unit
+    return None, unit
 
-    return None, unit, layer_obj
-
-def fetch_soil_data_all(lat: float, lon: float) -> Tuple[Dict[str, Dict[str, Any]], Optional[str]]:
+def fetch_soil_data_all(lat: float, lon: float) -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
     for p in PROPERTIES:
-        val, unit, raw = fetch_property_for_point(lat, lon, p)
-        out[p] = {"value": val, "unit": unit, "raw": raw}
-    return out, None
+        val, unit = fetch_property_for_point(lat, lon, p)
+        out[p] = {"value": val, "unit": unit}
+    return out
 
 # -----------------------------
 # Streamlit UI
@@ -115,12 +139,12 @@ st.set_page_config(page_title="SoilGrids Explorer", layout="centered", initial_s
 st.title("SoilGrids Explorer — lat/lon → soil properties")
 st.markdown(
     "Enter latitude & longitude and the app will query ISRIC SoilGrids for common soil properties "
-    "(SOC, pH, sand/silt/clay, bulk density, OCS). If a property is missing it will show 'No data'."
+    "(SOC, pH, sand/silt/clay, bulk density, OCS)."
 )
 
 with st.expander("Which properties are requested?"):
     st.write(", ".join(PROPERTIES))
-    st.caption("We attempt all available depths and return the first non-NULL value, applying unit scaling if needed.")
+    st.caption("We attempt all available depths and return the first non-NULL value, scaled if needed. If data is missing, nearby points or defaults are used.")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -129,8 +153,8 @@ with col2:
     lon = st.number_input("Longitude", value=77.594600, format="%.6f")
 
 if st.button("Get Soil Data"):
-    with st.spinner("Querying SoilGrids (one request per property)..."):
-        out, err = fetch_soil_data_all(lat, lon)
+    with st.spinner("Querying SoilGrids..."):
+        out = fetch_soil_data_all(lat, lon)
 
     rows = []
     for prop in PROPERTIES:
@@ -141,7 +165,7 @@ if st.button("Get Soil Data"):
         rows.append({"Property": prop.upper(), "Value": display_val, "Unit": unit})
 
     df = pd.DataFrame(rows)
-    st.subheader("Results (first available value across all depths, scaled)")
+    st.subheader("Results (first available value, scaled or default if missing)")
     st.table(df.set_index("Property"))
 
     try:
@@ -150,8 +174,6 @@ if st.button("Get Soil Data"):
     except Exception:
         pass
 
-    with st.expander("Raw property JSON (per property) — useful for debugging"):
-        for prop in PROPERTIES:
-            st.markdown(f"**{prop.upper()}**")
-            st.json(out[prop].get("raw"))
+    st.caption("Some values are defaults or estimated because SoilGrids data is missing in this region.")
+    st.markdown("Made with love by **Mayank Kumar Sharma** ❤️")
 
