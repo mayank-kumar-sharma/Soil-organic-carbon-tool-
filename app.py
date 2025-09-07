@@ -159,9 +159,9 @@ with st.expander("Which properties are requested?"):
 
 col1, col2 = st.columns(2)
 with col1:
-    lat = st.number_input("Latitude", value=19.0760, format="%.6f")  # Default = Mumbai
+    lat = st.number_input("Latitude", value=31.1471, format="%.6f")  # Default = Mumbai
 with col2:
-    lon = st.number_input("Longitude", value=72.8777, format="%.6f")
+    lon = st.number_input("Longitude", value=75.3412, format="%.6f")
 
 if st.button("Get Soil Data"):
     with st.spinner("Querying SoilGrids..."):
